@@ -8,8 +8,6 @@ The email contains a lot of information :
 
 ![Email ErrorNotifier Bundle](http://i49.tinypic.com/2wck36e.png "Email ErrorNotifier Bundle")
 
-
-
 ## Installation
 
 #### If you are working with Symfony >= 2.1
@@ -94,4 +92,3 @@ You may control the depth of recursion with a parameter, say foo = array('a'=>ar
                                    - d
 
 Default value is 1. (MAX_DEPTH const)
-
