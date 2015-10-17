@@ -84,6 +84,7 @@ class Notifier
      */
     public function onKernelException(GetResponseForExceptionEvent $event)
     {
+        return;
         if (HttpKernelInterface::MASTER_REQUEST !== $event->getRequestType()) {
             return;
         }
