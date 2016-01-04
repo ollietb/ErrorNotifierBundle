@@ -1,5 +1,13 @@
 <?php
 
+/*
+ * This file is part of the Elao ErrorNotifier Bundle
+ *
+ * Copyright (C) Elao
+ *
+ * @author Elao <contact@elao.com>
+ */
+
 namespace Elao\ErrorNotifierBundle\DependencyInjection;
 
 use Symfony\Component\Config\Definition\Builder\TreeBuilder;
@@ -10,7 +18,6 @@ use Symfony\Component\Config\Definition\ConfigurationInterface;
  */
 class Configuration implements ConfigurationInterface
 {
-
     /**
      * Get config tree
      *
@@ -24,9 +31,17 @@ class Configuration implements ConfigurationInterface
 
         $root
             ->children()
-                ->scalarNode('to')
+                ->arrayNode('to')
+                    ->beforeNormalization()
+                    ->ifString()
+                        ->then(function ($value) {
+                            return array($value);
+                        })
+                    ->end()
                     ->isRequired()
                     ->cannotBeEmpty()
+                    ->prototype('scalar')
+                    ->end()
                 ->end()
                 ->scalarNode('from')
                     ->isRequired()
@@ -34,6 +49,11 @@ class Configuration implements ConfigurationInterface
                 ->end()
                 ->booleanNode('handle404')
                     ->defaultValue(false)
+                ->end()
+                ->arrayNode('handleHTTPcodes')
+                    ->prototype('scalar')
+                    ->treatNullLike(array())
+                    ->end()
                 ->end()
                 ->scalarNode('mailer')
                     ->defaultValue('mailer')
@@ -52,7 +72,24 @@ class Configuration implements ConfigurationInterface
                 ->end()
                 ->arrayNode('ignoredClasses')
                     ->prototype('scalar')
+                    ->end()
                     ->treatNullLike(array())
+                ->end()
+                ->arrayNode('ignoredPhpErrors')
+                    ->prototype('scalar')
+                    ->end()
+                    ->treatNullLike(array())
+                ->end()
+                ->arrayNode('ignoredIPs')
+                    ->prototype('scalar')
+                    ->end()
+                    ->treatNullLike(array())
+                ->end()
+                ->scalarNode('ignoredAgentsPattern')
+                    ->defaultValue('')
+                ->end()
+                ->scalarNode('ignoredUrlsPattern')
+                    ->defaultValue('')
                 ->end()
             ->end();
 
