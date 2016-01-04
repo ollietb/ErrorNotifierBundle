@@ -62,6 +62,7 @@ elao_error_notifier:
     from: from@example.com
     to: to@example.com
     handle404: true # default :  false
+    handleHTTPcodes: ~
     mailer: your.mailer.id # default : mailer
     handlePHPErrors: true # catch fatal erros and email them
     handlePHPWarnings: true # catch warnings and email them
@@ -105,6 +106,18 @@ elao_error_notifier:
         - ...
 ```
 
+### How to handle other HTTP errors by given error code ?
+
+If you want the bundle to send email for other HTTP errors than 500 and 404, you can now specify the list of error codes you want to handle.
+
+```yml
+# app/config/config_prod.yml
+elao_error_notifier:
+    handleHTTPcodes:
+        - 405
+        - ...
+```
+
 ### How to avoid sending many same messages for one error ?
 
 If an error occurs on a website with a lot of active visitors you'll get spammed by the notifier for the same error.
@@ -143,6 +156,40 @@ You may control the depth of recursion with a parameter, say foo = array('a'=>ar
 
 Default value is 1. (MAX_DEPTH const)
 
+### How to ignore sending HTTP errors if request comes from any of given IPs ?
+
+If you want to ignore sending HTTP errors if the request comes from specific IPs, you can now specify the list of ignored IPs.
+
+```yml
+# app/config/config_prod.yml
+elao_error_notifier:
+    ignoredIPs:
+        - "178.63.45.100"
+        - ...
+
+### How to ignore sending HTTP errors if the user agent match a given pattern?
+
+For some reasons you may need to ignore sending notifications if request comes from some user agents.
+Often you will need to use this feature with annoying crawlers which uses artificial intelligence 
+to generate URLs which may not exist in your site.
+
+```yml
+# app/config/config_prod.yml
+elao_error_notifier:
+    ignoredAgentsPattern: "(Googlebot|bingbot)"
+
+```
+
+### How to ignore sending HTTP errors if the URI match a given pattern?
+
+For example if you want to ignore all not exist images errors you may do something like that.
+
+```yml
+# app/config/config_prod.yml
+elao_error_notifier:
+    ignoredUrlsPattern: "\.(jpg|png|gif)"
+
+```
 
 ## Screenshot
 
