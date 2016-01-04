@@ -91,6 +91,8 @@ class Configuration implements ConfigurationInterface
                 ->scalarNode('ignoredUrlsPattern')
                     ->defaultValue('')
                 ->end()
+                ->booleanNode('lazyLoad')
+                    ->defaultValue(true)
             ->end();
 
         return $treeBuilder;

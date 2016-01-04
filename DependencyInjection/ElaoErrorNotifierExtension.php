@@ -43,6 +43,11 @@ class ElaoErrorNotifierExtension extends Extension
                 $definition = $container->getDefinition('elao.error_notifier.listener');
                 $definition->replaceArgument(0, new Reference($config['mailer']));
             }
+
+            if ($config['lazyLoad']) {
+                $definition = $container->getDefinition('elao.error_notifier.listener');
+                $definition->setLazy($config['lazyLoad']);
+            }
         }
     }
 }
