@@ -1,63 +1,96 @@
 <?php
 
+/*
+ * This file is part of the Elao ErrorNotifier Bundle
+ *
+ * Copyright (C) Elao
+ *
+ * @author Elao <contact@elao.com>
+ */
+
 namespace Elao\ErrorNotifierBundle\Listener;
 
-use \Swift_Mailer;
-use Symfony\Component\Templating\EngineInterface;
-use Symfony\Component\HttpKernel\HttpKernelInterface;
-use Symfony\Component\HttpKernel\Exception\HttpException;
-use Symfony\Component\HttpKernel\Event\GetResponseForExceptionEvent;
+use Swift_Mailer;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Event\ConsoleCommandEvent;
+use Symfony\Component\Console\Event\ConsoleExceptionEvent;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Debug\Exception\FlattenException;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\GetResponseEvent;
+use Symfony\Component\HttpKernel\Event\GetResponseForExceptionEvent;
+use Symfony\Component\HttpKernel\Exception\HttpException;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\Templating\EngineInterface;
 
 /**
  * Notifier
  */
 class Notifier
 {
-
     /**
-     * @var Swift_Mailer $mailer
+     * @var Swift_Mailer
      */
     private $mailer;
 
     /**
-     * @var EngineInterface $templating
+     * @var EngineInterface
      */
     private $templating;
 
+    /**
+     * @var string
+     */
+    private $errorsDir;
+
     private $from;
-
     private $to;
-
-    private $handle404;
-
-    private $reportWarnings = false;
-    private $reportErrors = false;
-
     private $request;
+    private $handle404;
+    private $ignoredClasses;
+    private $ignoredPhpErrors;
+    private $reportWarnings = false;
+    private $reportErrors   = false;
+    private $reportSilent   = false;
+    private $repeatTimeout  = false;
+    private $ignoredIPs;
+    private $ignoredAgentsPattern;
+    private $ignoredUrlsPattern;
+    private $command;
+    private $commandInput;
 
     private static $tmpBuffer = null;
 
     /**
-     * __construct
+     * The constructor
      *
      * @param Swift_Mailer    $mailer     mailer
      * @param EngineInterface $templating templating
-     * @param string          $from       send mail from
-     * @param string          $to         send mail to
-     * @param boolean         $handle404  handle 404 error ?
+     * @param string          $cacheDir   cacheDir
+     * @param array           $config     configure array
      */
-    public function __construct(Swift_Mailer $mailer, EngineInterface $templating, $from, $to, $handle404 = false, $handlePHPErrors = false, $handlePHPWarnings = false)
+    public function __construct(Swift_Mailer $mailer, EngineInterface $templating, $cacheDir, $config)
     {
-        $this->mailer = $mailer;
-        $this->templating = $templating;
+        $this->mailer               = $mailer;
+        $this->templating           = $templating;
+        $this->from                 = $config['from'];
+        $this->to                   = $config['to'];
+        $this->handle404            = $config['handle404'];
+        $this->handleHTTPcodes      = $config['handleHTTPcodes'];
+        $this->reportErrors         = $config['handlePHPErrors'];
+        $this->reportWarnings       = $config['handlePHPWarnings'];
+        $this->reportSilent         = $config['handleSilentErrors'];
+        $this->ignoredClasses       = $config['ignoredClasses'];
+        $this->ignoredPhpErrors     = $config['ignoredPhpErrors'];
+        $this->repeatTimeout        = $config['repeatTimeout'];
+        $this->errorsDir            = $cacheDir . '/errors';
+        $this->ignoredIPs           = $config['ignoredIPs'];
+        $this->ignoredAgentsPattern = $config['ignoredAgentsPattern'];
+        $this->ignoredUrlsPattern   = $config['ignoredUrlsPattern'];
 
-        $this->from = $from;
-        $this->to = $to;
-        $this->handle404 = $handle404;
-
-        $this->reportErrors = $handlePHPErrors;
-        $this->reportWarnings = $handlePHPWarnings;
+        if (!is_dir($this->errorsDir)) {
+            mkdir($this->errorsDir);
+        }
     }
 
     /**
@@ -74,10 +107,47 @@ class Notifier
         $exception = $event->getException();
 
         if ($exception instanceof HttpException) {
-            if (500 === $exception->getStatusCode() || (404 === $exception->getStatusCode() && true === $this->handle404)) {
+            if (in_array($event->getRequest()->getClientIp(), $this->ignoredIPs)) {
+                return;
+            }
 
+            if (strlen($this->ignoredAgentsPattern)) {
+                if (preg_match('#' . $this->ignoredAgentsPattern . '#', $event->getRequest()->headers->get('User-Agent'))) {
+                    return;
+                }
+            }
+
+            if (strlen($this->ignoredUrlsPattern)) {
+                if (preg_match('#' . $this->ignoredUrlsPattern . '#', $event->getRequest()->getUri())) {
+                    return;
+                }
+            }
+
+            if (500 === $exception->getStatusCode() || (404 === $exception->getStatusCode() && true === $this->handle404) || (in_array($exception->getStatusCode(), $this->handleHTTPcodes))) {
                 $this->createMailAndSend($exception, $event->getRequest());
             }
+        } else {
+            $sendMail = !in_array(get_class($exception), $this->ignoredClasses);
+
+            if ($sendMail === true) {
+                $this->createMailAndSend($exception, $event->getRequest());
+            }
+        }
+    }
+
+    /**
+     * Handle the event
+     *
+     * @param ConsoleExceptionEvent $event event
+     */
+    public function onConsoleException(ConsoleExceptionEvent $event)
+    {
+        $exception = $event->getException();
+
+        $sendMail = !in_array(get_class($exception), $this->ignoredClasses);
+
+        if ($sendMail === true) {
+            $this->createMailAndSend($exception, null, null, $this->command, $this->commandInput);
         }
     }
 
@@ -93,37 +163,61 @@ class Notifier
      */
     public function onKernelRequest(GetResponseEvent $event)
     {
-
         if ($this->reportErrors || $this->reportWarnings) {
             self::_reserveMemory();
 
             $this->request = $event->getRequest();
 
-            // set_error_handler and register_shutdown_function can be triggered on
-            // both warnings and errors
-            set_error_handler(array($this, 'handlePhpError'), E_ALL);
-
-            // From PHP Documentation: the following error types cannot be handled with
-            // a user defined function using set_error_handler: *E_ERROR*, *E_PARSE*, *E_CORE_ERROR*, *E_CORE_WARNING*,
-            // *E_COMPILE_ERROR*, *E_COMPILE_WARNING*
-            // That is we need to use also register_shutdown_function()
-            register_shutdown_function(array($this, 'handlePhpFatalErrorAndWarnings'));
+            $this->setErrorHandlers();
         }
-
     }
 
     /**
-     *
+     * @param ConsoleCommandEvent $event
+     */
+    public function onConsoleCommand(ConsoleCommandEvent $event)
+    {
+        $this->request = null;
+
+        $this->command      = $event->getCommand();
+        $this->commandInput = $event->getInput();
+
+        if ($this->reportErrors || $this->reportWarnings) {
+            self::_reserveMemory();
+
+            $this->setErrorHandlers();
+        }
+    }
+
+    protected function setErrorHandlers()
+    {
+        // set_error_handler and register_shutdown_function can be triggered on
+        // both warnings and errors
+        set_error_handler(array($this, 'handlePhpError'), E_ALL);
+
+        // From PHP Documentation: the following error types cannot be handled with
+        // a user defined function using set_error_handler: *E_ERROR*, *E_PARSE*, *E_CORE_ERROR*, *E_CORE_WARNING*,
+        // *E_COMPILE_ERROR*, *E_COMPILE_WARNING*
+        // That is we need to use also register_shutdown_function()
+        register_shutdown_function(array($this, 'handlePhpFatalErrorAndWarnings'));
+    }
+
+    /**
      * @see http://php.net/set_error_handler
-     * @param integer $level
-     * @param string  $message
-     * @param string  $file
-     * @param integer $line
+     *
+     * @param int    $level
+     * @param string $message
+     * @param string $file
+     * @param int    $line
      *
      * @throws ErrorException
      */
     public function handlePhpError($level, $message, $file, $line, $errcontext)
     {
+        // don't catch error with error_repoting is 0
+        if (0 === error_reporting() && false === $this->reportSilent) {
+            return false;
+        }
 
         // there would be more warning codes but they are not caught by set_error_handler
         // but by register_shutdown_function
@@ -133,11 +227,16 @@ class Notifier
             return false;
         }
 
+        if (in_array($message, $this->ignoredPhpErrors)) {
+            return false;
+        }
+
         $exception = new \ErrorException(sprintf('%s: %s in %s line %d', $this->getErrorString($level), $message, $file, $line), 0, $level, $file, $line);
 
-        $this->createMailAndSend($exception, $this->request, $errcontext);
+        $this->createMailAndSend($exception, $this->request, $errcontext, $this->command, $this->commandInput);
 
-        return false; // in order not to bypass the standard PHP error handler
+        // in order not to bypass the standard PHP error handler
+        return false;
     }
 
     /**
@@ -149,8 +248,10 @@ class Notifier
         self::_freeMemory();
 
         $lastError = error_get_last();
-        if (is_null($lastError))
+
+        if (is_null($lastError)) {
             return;
+        }
 
         $errors = array();
 
@@ -162,23 +263,23 @@ class Notifier
             $errors = array_merge($errors, array(E_CORE_WARNING, E_COMPILE_WARNING, E_STRICT));
         }
 
-        if (in_array($lastError['type'], $errors)) {
-            $exception = new \ErrorException(sprintf('%s: %s in %s line %d', @$this->getErrorString(@$lastError['type']), @$lastError['message'], @$lastError['file'], @$lastError['line']),  @$lastError['type'], @$lastError['type'], @$lastError['file'], @$lastError['line']);
-            $this->createMailAndSend($exception, $this->request);
+        if (in_array($lastError['type'], $errors) && !in_array(@$lastError['message'], $this->ignoredPhpErrors)) {
+            $exception = new \ErrorException(sprintf('%s: %s in %s line %d', @$this->getErrorString(@$lastError['type']), @$lastError['message'], @$lastError['file'], @$lastError['line']), @$lastError['type'], @$lastError['type'], @$lastError['file'], @$lastError['line']);
+            $this->createMailAndSend($exception, $this->request, null, $this->command, $this->commandInput);
         }
     }
 
     /**
      * Convert the error code to a readable format
      *
-     * @param  integer $errorNo
+     * @param int $errorNo
+     *
      * @return string
      */
     public function getErrorString($errorNo)
     {
         // may be exhaustive, but not sure
         $errorStrings = array(
-
             E_WARNING           => 'Warning',
             E_NOTICE            => 'Notice',
             E_USER_ERROR        => 'User Error',
@@ -188,46 +289,85 @@ class Notifier
             E_RECOVERABLE_ERROR => 'Catchable Fatal Error',
             E_DEPRECATED        => 'Deprecated',
             E_USER_DEPRECATED   => 'User Deprecated',
-
-            E_ERROR => 'Error',
-            E_PARSE => 'Parse Error',
-            E_CORE_ERROR => 'E_CORE_ERROR',
-            E_COMPILE_ERROR => 'E_COMPILE_ERROR',
-            E_CORE_WARNING => 'E_CORE_WARNING',
-            E_COMPILE_WARNING => 'E_COMPILE_WARNING',
+            E_ERROR             => 'Error',
+            E_PARSE             => 'Parse Error',
+            E_CORE_ERROR        => 'E_CORE_ERROR',
+            E_COMPILE_ERROR     => 'E_COMPILE_ERROR',
+            E_CORE_WARNING      => 'E_CORE_WARNING',
+            E_COMPILE_WARNING   => 'E_COMPILE_WARNING',
         );
 
         return array_key_exists($errorNo, $errorStrings) ? $errorStrings[$errorNo] : 'UNKNOWN';
-
     }
 
     /**
-     *
      * @param ErrorException $exception
      * @param Request        $request
      * @param array          $context
+     * @param Command        $command
+     * @param InputInterface $commandInput
      */
-    public function createMailAndSend($exception, $request, $context = null)
+    public function createMailAndSend($exception, Request $request = null, $context = null, Command $command = null, InputInterface $commandInput = null)
     {
+        if (!$exception instanceof FlattenException) {
+            $exception = FlattenException::create($exception);
+        }
+        if ($this->repeatTimeout && $this->checkRepeat($exception)) {
+            return;
+        }
 
         $body = $this->templating->render('ElaoErrorNotifierBundle::mail.html.twig', array(
             'exception'       => $exception,
-            'exception_class' => get_class($exception),
             'request'         => $request,
             'status_code'     => $exception->getCode(),
-            // This is probably too dangerous as it could contain recursive objects
-            //'context'         => $context
+            'context'         => $context,
+            'command'         => $command,
+            'command_input'   => $commandInput,
         ));
 
+        if ($this->request) {
+            $subject = '[' . $request->headers->get('host') . '] Error ' . $exception->getStatusCode() . ': ' . $exception->getMessage();
+        } elseif ($this->command) {
+            $subject = '[' . $this->command->getName() . '] Error ' . $exception->getStatusCode() . ': ' . $exception->getMessage();
+        } else {
+            $subject = 'Error ' . $exception->getStatusCode() . ': ' . $exception->getMessage();
+        }
+
+        if (function_exists('mb_substr')) {
+            $subject = mb_substr($subject, 0, 255);
+        } else {
+            $subject = substr($subject, 0, 255);
+        }
+
         $mail = \Swift_Message::newInstance()
-            ->setSubject('[' . $request->headers->get('host') . '] Error')
+            ->setSubject($subject)
             ->setFrom($this->from)
             ->setTo($this->to)
             ->setContentType('text/html')
             ->setBody($body);
 
         $this->mailer->send($mail);
+    }
 
+    /**
+     * Check last send time
+     *
+     * @param FlattenException $exception
+     *
+     * @return bool
+     */
+    private function checkRepeat(FlattenException $exception)
+    {
+        $key  = md5($exception->getMessage() . ':' . $exception->getLine() . ':' . $exception->getFile());
+        $file = $this->errorsDir . '/' . $key;
+        $time = is_file($file) ? file_get_contents($file) : 0;
+        if ($time < time()) {
+            file_put_contents($file, time() + $this->repeatTimeout);
+
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -242,5 +382,4 @@ class Notifier
     {
         self::$tmpBuffer = '';
     }
-
 }
